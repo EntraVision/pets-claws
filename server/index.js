@@ -4,6 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 require('express-async-errors');
 const logger = require('./utils/logger');
+const db = require('./db');
 
 const app = express();
 
@@ -39,7 +40,15 @@ app.use((err, req, res, next) => {
 
 if (require.main === module) {
   const PORT = process.env.PORT || 4000;
-  app.listen(PORT, () => logger.info(`Inventory Management Server running on port ${PORT}`));
+  db.initialize()
+    .then(() => {
+      app.listen(PORT, () => logger.info(`Inventory Management Server running on port ${PORT}`));
+    })
+    .catch((err) => {
+      logger.error('Database initialization failed');
+      logger.error(err);
+      process.exit(1);
+    });
 }
 
 module.exports = app;
