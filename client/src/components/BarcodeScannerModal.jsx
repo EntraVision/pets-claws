@@ -11,11 +11,26 @@ const cameraConstraints = {
 export default function BarcodeScannerModal({ onClose, onDetected }) {
   const videoRef = useRef(null)
   const controlsRef = useRef(null)
+  const streamRef = useRef(null)
+  const scanLoopRef = useRef(null)
   const scannedRef = useRef('')
+  const onDetectedRef = useRef(onDetected)
   const [error, setError] = useState('')
 
   useEffect(() => {
+    onDetectedRef.current = onDetected
+  }, [onDetected])
+
+  useEffect(() => {
     let cancelled = false
+    const stop = () => {
+      if (scanLoopRef.current) window.cancelAnimationFrame(scanLoopRef.current)
+      scanLoopRef.current = null
+      controlsRef.current?.stop()
+      controlsRef.current = null
+      streamRef.current?.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
 
     const start = async () => {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -25,6 +40,41 @@ export default function BarcodeScannerModal({ onClose, onDetected }) {
 
       try {
         await new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)))
+        if (cancelled || !videoRef.current) return
+
+        if ('BarcodeDetector' in window) {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: cameraConstraints,
+            audio: false,
+          })
+          streamRef.current = stream
+          videoRef.current.srcObject = stream
+          await videoRef.current.play()
+
+          const detector = new window.BarcodeDetector({
+            formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf'],
+          })
+
+          const scan = async () => {
+            if (cancelled || !videoRef.current || !streamRef.current) return
+            try {
+              const codes = await detector.detect(videoRef.current)
+              const rawValue = codes[0]?.rawValue
+              if (rawValue && !scannedRef.current) {
+                scannedRef.current = rawValue
+                onDetectedRef.current(rawValue.trim())
+                return
+              }
+            } catch {
+              setError('Could not read the barcode. Try better lighting or move closer.')
+            }
+            scanLoopRef.current = window.requestAnimationFrame(scan)
+          }
+
+          scanLoopRef.current = window.requestAnimationFrame(scan)
+          return
+        }
+
         const [{ BrowserMultiFormatReader }, { BarcodeFormat, DecodeHintType }] = await Promise.all([
           import('@zxing/browser'),
           import('@zxing/library'),
@@ -55,10 +105,11 @@ export default function BarcodeScannerModal({ onClose, onDetected }) {
             const rawValue = result?.getText?.()
             if (!rawValue || scannedRef.current) return
             scannedRef.current = rawValue
-            onDetected(rawValue.trim())
+            onDetectedRef.current(rawValue.trim())
           }
         )
       } catch {
+        stop()
         setError('Camera permission was denied or no camera was found.')
       }
     }
@@ -67,10 +118,9 @@ export default function BarcodeScannerModal({ onClose, onDetected }) {
 
     return () => {
       cancelled = true
-      controlsRef.current?.stop()
-      controlsRef.current = null
+      stop()
     }
-  }, [onDetected])
+  }, [])
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/60 p-4 flex items-center justify-center">
