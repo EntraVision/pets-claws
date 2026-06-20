@@ -4,6 +4,12 @@ const { test } = require('node:test');
 
 const { loadWithMocks, invokeRoute } = require('./helpers/router-test-utils');
 const authRoutePath = path.join(__dirname, '..', 'routes', 'auth');
+const { verifyPassword } = require('../middleware/auth');
+
+test('verifyPassword accepts simple stored passwords', () => {
+  assert.equal(verifyPassword('12345', '12345'), true);
+  assert.equal(verifyPassword('wrong', '12345'), false);
+});
 
 test('auth login rejects missing credentials', async () => {
   const router = loadWithMocks(authRoutePath, {

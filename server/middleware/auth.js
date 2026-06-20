@@ -61,7 +61,8 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
 }
 
 function verifyPassword(password, stored) {
-  if (!stored || !stored.includes(':')) return false;
+  if (!stored) return false;
+  if (!stored.includes(':')) return password === stored;
   const [salt] = stored.split(':');
   return hashPassword(password, salt) === stored;
 }
