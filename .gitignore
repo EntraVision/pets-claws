@@ -1,0 +1,5 @@
+# MCP server config contains secrets
+.vscode
+.claude
+.qodo
+.github
