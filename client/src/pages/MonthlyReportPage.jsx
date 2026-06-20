@@ -29,6 +29,15 @@ function Metric({ icon: Icon, label, value, tone = 'emerald' }) {
   )
 }
 
+function DailyValue({ label, value, tone }) {
+  return (
+    <div>
+      <p className="text-[11px] font-medium uppercase text-slate-400">{label}</p>
+      <p className={`text-sm font-semibold ${tone || 'text-slate-900'}`}>{value}</p>
+    </div>
+  )
+}
+
 export default function MonthlyReportPage() {
   const api = useApi()
   const [month, setMonth] = useState(monthInputValue())
@@ -90,7 +99,32 @@ export default function MonthlyReportPage() {
             <h2 className="font-semibold">Top Sold Items</h2>
             <p className="text-xs text-slate-500 mt-0.5">Ranked by sales total for the selected month.</p>
           </div>
-          <div className="overflow-hidden">
+          <div className="md:hidden divide-y divide-slate-100">
+            {(report?.days || []).map(day => (
+              <div key={day.date} className="p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400">Day {day.day}</p>
+                    <p className="font-semibold text-slate-900">{dateOnly(day.date)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-slate-400">Cash</p>
+                    <p className={`font-bold ${number(day.pure_cash) < 0 ? 'text-red-600' : 'text-slate-900'}`}>{money(day.pure_cash)}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                  <DailyValue label="Sales" value={money(day.sales_total)} />
+                  <DailyValue label="Expenses" value={money(day.expenses_total)} />
+                  <DailyValue label="Supplier" value={money(day.supplier_payments_total)} />
+                  <DailyValue label="Margin" value={money(day.gross_margin_total)} />
+                  <DailyValue label="Sold" value={qty(day.stock_output_total)} />
+                  <DailyValue label="Activity" value={`${day.sales_count} sales / ${day.expenses_count} expenses`} />
+                </div>
+              </div>
+            ))}
+            {loading && <div className="px-4 py-10 text-center text-slate-400">Loading monthly report...</div>}
+          </div>
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full table-fixed text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500">
                 <tr>
