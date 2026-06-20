@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db');
 const { authenticate, requirePermission } = require('../middleware/auth');
 const { stockState, dateKey, addMonths, expiryState, presentItem } = require('../utils/item-state');
+const { quantity: validQuantity } = require('../utils/quantity');
 
 async function logHistory(itemId, userId, action, oldValues, newValues, notes) {
   await db.query(
@@ -101,16 +102,25 @@ router.post('/', authenticate, requirePermission('stock'), async (req, res) => {
     status = 'active', image_url, location, notes,
   } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
+  const unitType = unit_type === 'kg' ? 'kg' : 'piece';
+  let itemQuantity;
+  let warningQuantity;
+  try {
+    itemQuantity = validQuantity(quantity, unitType);
+    warningQuantity = validQuantity(reorder_warning_quantity, unitType, 'warning quantity');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   const result = await db.query(
     `INSERT INTO items
      (name, sku, barcode, description, category_id, supplier_id, quantity, reorder_warning_quantity,
       expiry_date, expiry_warning_months, unit_type, cost_price, sale_price, status, image_url, location, notes)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-     RETURNING *`,
+    RETURNING *`,
     [name, sku || null, barcode || null, description || null, category_id || null, supplier_id || null,
-      quantity, reorder_warning_quantity, expiry_date || null, Number(expiry_warning_months || 3),
-      unit_type, cost_price, sale_price, status, image_url || null, location || null, notes || null]
+      itemQuantity, warningQuantity, expiry_date || null, Number(expiry_warning_months || 3),
+      unitType, cost_price, sale_price, status, image_url || null, location || null, notes || null]
   );
   await logHistory(result.rows[0].id, req.user.id, 'created', null, result.rows[0], 'Item created');
   res.status(201).json(presentItem(result.rows[0]));
@@ -121,6 +131,13 @@ router.put('/:id', authenticate, requirePermission('stock'), async (req, res) =>
   if (!existing.rows[0]) return res.status(404).json({ error: 'Item not found' });
   const old = existing.rows[0];
   const fields = { ...old, ...req.body };
+  fields.unit_type = fields.unit_type === 'kg' ? 'kg' : 'piece';
+  try {
+    fields.quantity = validQuantity(fields.quantity, fields.unit_type);
+    fields.reorder_warning_quantity = validQuantity(fields.reorder_warning_quantity, fields.unit_type, 'warning quantity');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   const result = await db.query(
     `UPDATE items SET
@@ -146,10 +163,16 @@ router.patch('/:id/quantity', authenticate, requirePermission('stock'), async (r
   const existing = await db.query('SELECT * FROM items WHERE id = $1', [req.params.id]);
   if (!existing.rows[0]) return res.status(404).json({ error: 'Item not found' });
   const old = existing.rows[0];
+  let validAdjustment;
+  try {
+    validAdjustment = validQuantity(adjustment, old.unit_type, 'adjustment');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
   const result = await db.query(
     `UPDATE items SET quantity = GREATEST(0, quantity + $1::numeric), updated_at = NOW()
      WHERE id = $2 RETURNING *`,
-    [adjustment, req.params.id]
+    [validAdjustment, req.params.id]
   );
   await logHistory(req.params.id, req.user.id, 'quantity_changed', { quantity: old.quantity }, { quantity: result.rows[0].quantity }, notes || null);
   res.json(presentItem(result.rows[0]));

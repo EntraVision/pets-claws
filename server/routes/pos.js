@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const db = require('../db');
 const { authenticate, requirePermission } = require('../middleware/auth');
+const { quantity: validQuantity } = require('../utils/quantity');
 
 function money(value) {
   return Math.max(0, Math.round(Number(value || 0) * 100) / 100);
@@ -60,11 +61,11 @@ router.post('/sales', authenticate, requirePermission('pos'), async (req, res) =
 
     for (const line of lines) {
       if (line.custom || !line.item_id) {
-        const quantity = Number(line.quantity);
+        const unitType = line.unit_type === 'kg' ? 'kg' : 'piece';
+        const quantity = validQuantity(line.quantity, unitType);
         if (!quantity || quantity <= 0) throw new Error('Invalid quantity for custom item');
 
         const itemName = String(line.item_name || line.name || 'Other').trim() || 'Other';
-        const unitType = line.unit_type === 'kg' ? 'kg' : 'piece';
         const unitPrice = money(line.unit_price);
         if (unitPrice <= 0) throw new Error(`Invalid unit price for ${itemName}`);
 
@@ -94,7 +95,7 @@ router.post('/sales', authenticate, requirePermission('pos'), async (req, res) =
       const item = itemResult.rows[0];
       if (!item || item.status !== 'active') throw new Error(`Item is unavailable: ${line.item_id}`);
 
-      const quantity = Number(line.quantity);
+      const quantity = validQuantity(line.quantity, item.unit_type);
       if (!quantity || quantity <= 0) throw new Error(`Invalid quantity for ${item.name}`);
       if (Number(item.quantity) < quantity) throw new Error(`Insufficient stock for ${item.name}`);
 

@@ -3,6 +3,7 @@ import { Barcode, CalendarDays, Minus, PackagePlus, Plus, ScanLine, Trash2, X } 
 import toast from 'react-hot-toast'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, localDateInputValue, money, qty } from '../lib/format'
+import { normalizeQuantity, quantityInputProps, sanitizeQuantityInput } from '../lib/quantity'
 
 export default function POSPage() {
   const api = useApi()
@@ -30,7 +31,7 @@ export default function POSPage() {
       const existing = prev.find(line => line.item_id === item.id)
       const step = item.unit_type === 'kg' ? 0.25 : 1
       if (existing) {
-        const nextQuantity = Number(existing.quantity) + step
+        const nextQuantity = normalizeQuantity(Number(existing.quantity) + step, item.unit_type)
         if (nextQuantity > Number(existing.available)) {
           toast.error(`Insufficient stock for ${existing.name}`)
           return prev
@@ -94,7 +95,7 @@ export default function POSPage() {
   const addOther = (e) => {
     e.preventDefault()
     const unitPrice = Number(otherItem.unit_price || 0)
-    const quantity = Number(otherItem.quantity || 0)
+    const quantity = normalizeQuantity(otherItem.quantity, otherItem.unit_type)
     if (!quantity || quantity <= 0) return toast.error('Enter a valid quantity')
     if (!unitPrice || unitPrice <= 0) return toast.error('Enter a custom price')
 
@@ -121,6 +122,14 @@ export default function POSPage() {
 
   const update = (cartId, patch) => setCart(prev => prev.map(line => line.cart_id === cartId ? { ...line, ...patch } : line))
   const remove = (cartId) => setCart(prev => prev.filter(line => line.cart_id !== cartId))
+  const setOtherQuantity = (value) => {
+    const sanitized = sanitizeQuantityInput(value, otherItem.unit_type)
+    if (sanitized !== null) setOtherItem(prev => ({ ...prev, quantity: sanitized }))
+  }
+  const updateLineQuantity = (line, value) => {
+    const sanitized = sanitizeQuantityInput(value, line.unit_type)
+    if (sanitized !== null) update(line.cart_id, { quantity: sanitized })
+  }
 
   const lineBase = (line) => Math.max(0, Number(line.unit_price || 0) * Number(line.quantity || 0))
   const percent = (value) => Math.min(100, Math.max(0, Number(value || 0)))
@@ -143,7 +152,7 @@ export default function POSPage() {
           item_id,
           item_name: name,
           barcode,
-          quantity: Number(quantity),
+          quantity: normalizeQuantity(quantity, unit_type),
           unit_price: Number(unit_price || 0),
           unit_type,
           discount_percent: Number(discount_percent ?? discount ?? 0),
@@ -208,11 +217,11 @@ export default function POSPage() {
             </div>
             <div>
               <label className="block text-xs text-slate-500 mb-1">Quantity</label>
-              <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" type="number" step={otherItem.unit_type === 'kg' ? '0.001' : '1'} min="0" value={otherItem.quantity} onChange={e => setOtherItem(prev => ({ ...prev, quantity: e.target.value }))} />
+              <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" {...quantityInputProps(otherItem.unit_type)} value={otherItem.quantity} onChange={e => setOtherQuantity(e.target.value)} onBlur={e => setOtherItem(prev => ({ ...prev, quantity: normalizeQuantity(e.target.value, prev.unit_type) }))} />
             </div>
             <div>
               <label className="block text-xs text-slate-500 mb-1">Unit</label>
-              <select className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" value={otherItem.unit_type} onChange={e => setOtherItem(prev => ({ ...prev, unit_type: e.target.value }))}>
+              <select className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" value={otherItem.unit_type} onChange={e => setOtherItem(prev => ({ ...prev, unit_type: e.target.value, quantity: normalizeQuantity(prev.quantity, e.target.value) }))}>
                 <option value="piece">Pieces</option>
                 <option value="kg">Kg</option>
               </select>
@@ -250,9 +259,9 @@ export default function POSPage() {
                   <td className="px-4 py-3">{line.custom ? '-' : qty(line.available, line.unit_type)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
-                      <button onClick={() => update(line.cart_id, { quantity: Math.max(0, Number(line.quantity) - (line.unit_type === 'kg' ? 0.25 : 1)) })} className="p-1 rounded hover:bg-slate-100" type="button"><Minus size={14} /></button>
-                      <input className="w-20 rounded-md border border-slate-300 px-2 py-1 text-sm" type="number" step={line.unit_type === 'kg' ? '0.001' : '1'} min="0" value={line.quantity} onChange={e => update(line.cart_id, { quantity: e.target.value })} />
-                      <button onClick={() => update(line.cart_id, { quantity: Number(line.quantity) + (line.unit_type === 'kg' ? 0.25 : 1) })} className="p-1 rounded hover:bg-slate-100" type="button"><Plus size={14} /></button>
+                      <button onClick={() => update(line.cart_id, { quantity: normalizeQuantity(Math.max(0, Number(line.quantity) - (line.unit_type === 'kg' ? 0.25 : 1)), line.unit_type) })} className="p-1 rounded hover:bg-slate-100" type="button"><Minus size={14} /></button>
+                      <input className="w-20 rounded-md border border-slate-300 px-2 py-1 text-sm" {...quantityInputProps(line.unit_type)} value={line.quantity} onChange={e => updateLineQuantity(line, e.target.value)} onBlur={e => update(line.cart_id, { quantity: normalizeQuantity(e.target.value, line.unit_type) })} />
+                      <button onClick={() => update(line.cart_id, { quantity: normalizeQuantity(Number(line.quantity) + (line.unit_type === 'kg' ? 0.25 : 1), line.unit_type) })} className="p-1 rounded hover:bg-slate-100" type="button"><Plus size={14} /></button>
                     </div>
                   </td>
                   <td className="px-4 py-3">

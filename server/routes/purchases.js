@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const db = require('../db');
 const { authenticate, requirePermission } = require('../middleware/auth');
+const { quantity: validQuantity } = require('../utils/quantity');
 
 function money(value) {
   return Math.max(0, Math.round(Number(value || 0) * 100) / 100);
@@ -10,7 +11,7 @@ router.get('/', authenticate, requirePermission('purchases'), async (req, res) =
   const result = await db.query(
     `SELECT p.*, s.name AS supplier_name, u.username AS created_by_name,
             COALESCE(json_agg(json_build_object(
-              'id', pl.id, 'item_id', pl.item_id, 'item_name', i.name,
+              'id', pl.id, 'item_id', pl.item_id, 'item_name', i.name, 'unit_type', i.unit_type,
               'quantity', pl.quantity, 'unit_cost', pl.unit_cost, 'line_total', pl.line_total
             ) ORDER BY pl.id) FILTER (WHERE pl.id IS NOT NULL), '[]') AS lines
      FROM purchases p
@@ -36,7 +37,7 @@ router.post('/', authenticate, requirePermission('purchases'), async (req, res) 
     for (const line of lines) {
       const item = await client.query('SELECT * FROM items WHERE id = $1 FOR UPDATE', [line.item_id]);
       if (!item.rows[0]) throw new Error(`Item not found: ${line.item_id}`);
-      const quantity = Number(line.quantity);
+      const quantity = validQuantity(line.quantity, item.rows[0].unit_type);
       if (!quantity || quantity <= 0) throw new Error(`Invalid purchase quantity for ${item.rows[0].name}`);
       const unitCost = money(line.unit_cost);
       prepared.push({ item: item.rows[0], quantity, unitCost, lineTotal: money(quantity * unitCost) });

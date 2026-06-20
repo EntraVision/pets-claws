@@ -3,6 +3,7 @@ import { AlertTriangle, Plus, ShoppingBag } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, money, qty } from '../lib/format'
+import { normalizeQuantity, quantityInputProps, sanitizeQuantityInput } from '../lib/quantity'
 
 export default function PurchasesPage() {
   const api = useApi()
@@ -10,6 +11,12 @@ export default function PurchasesPage() {
   const [items, setItems] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [form, setForm] = useState({ supplier_id: '', paid_status: 'unpaid', notes: '', item_id: '', quantity: 1, unit_cost: 0 })
+  const selectedItem = items.find(item => String(item.id) === String(form.item_id))
+  const selectedUnit = selectedItem?.unit_type || 'piece'
+  const setQuantity = (value) => {
+    const sanitized = sanitizeQuantityInput(value, selectedUnit)
+    if (sanitized !== null) setForm(prev => ({ ...prev, quantity: sanitized }))
+  }
 
   const fetch = async () => {
     const [p, i, s] = await Promise.all([api.get('/api/purchases'), api.get('/api/items?limit=500'), api.get('/api/suppliers')])
@@ -27,7 +34,7 @@ export default function PurchasesPage() {
         supplier_id: form.supplier_id || null,
         paid_status: form.paid_status,
         notes: form.notes,
-        lines: [{ item_id: Number(form.item_id), quantity: Number(form.quantity), unit_cost: Number(form.unit_cost) }],
+        lines: [{ item_id: Number(form.item_id), quantity: normalizeQuantity(form.quantity, selectedUnit), unit_cost: Number(form.unit_cost) }],
       })
       toast.success('Purchase recorded and stock increased')
       setForm({ supplier_id: '', paid_status: 'unpaid', notes: '', item_id: '', quantity: 1, unit_cost: 0 })
@@ -62,7 +69,7 @@ export default function PurchasesPage() {
           <label className="block text-xs text-slate-500 mb-1">Item</label>
           <select required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" value={form.item_id} onChange={e => {
             const item = items.find(x => String(x.id) === e.target.value)
-            setForm({ ...form, item_id: e.target.value, unit_cost: item?.cost_price || 0 })
+            setForm({ ...form, item_id: e.target.value, quantity: normalizeQuantity(form.quantity, item?.unit_type || 'piece'), unit_cost: item?.cost_price || 0 })
           }}>
             <option value="">Select item</option>
             {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
@@ -70,7 +77,7 @@ export default function PurchasesPage() {
         </div>
         <div>
           <label className="block text-xs text-slate-500 mb-1">Qty</label>
-          <input required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" type="number" step="0.001" min="0.001" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} />
+          <input required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" {...quantityInputProps(selectedUnit, selectedUnit === 'kg' ? 0.01 : 1)} value={form.quantity} onChange={e => setQuantity(e.target.value)} onBlur={e => setForm({ ...form, quantity: normalizeQuantity(e.target.value, selectedUnit) })} />
         </div>
         <div>
           <label className="block text-xs text-slate-500 mb-1">Unit cost</label>
@@ -110,7 +117,7 @@ export default function PurchasesPage() {
                 <td className="px-4 py-3 font-semibold">#{p.id}</td>
                 <td className="px-4 py-3">{p.supplier_name || '-'}</td>
                 <td className="px-4 py-3 text-xs">
-                  {p.lines.map(line => <p key={line.id}>{line.item_name}: {qty(line.quantity)}</p>)}
+                  {p.lines.map(line => <p key={line.id}>{line.item_name}: {qty(line.quantity, line.unit_type)}</p>)}
                 </td>
                 <td className="px-4 py-3">{money(p.total_cost)}</td>
                 <td className="px-4 py-3">

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Loader2, X } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import { dateInputValue } from '../lib/format'
+import { normalizeQuantity, quantityInputProps, sanitizeQuantityInput } from '../lib/quantity'
 
 const empty = {
   name: '', sku: '', barcode: '', description: '', category_id: '', supplier_id: '',
@@ -31,6 +32,16 @@ export default function AddEditItemModal({ item, onClose, onSaved }) {
   }, [])
 
   const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }))
+  const setQuantity = (key, value) => {
+    const sanitized = sanitizeQuantityInput(value, form.unit_type)
+    if (sanitized !== null) set(key, sanitized)
+  }
+  const setUnit = (unit) => setForm(prev => ({
+    ...prev,
+    unit_type: unit,
+    quantity: normalizeQuantity(prev.quantity, unit),
+    reorder_warning_quantity: normalizeQuantity(prev.reorder_warning_quantity, unit),
+  }))
   const input = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500'
   const label = 'block text-xs font-medium text-slate-600 mb-1'
 
@@ -42,8 +53,8 @@ export default function AddEditItemModal({ item, onClose, onSaved }) {
       ...form,
       category_id: form.category_id || null,
       supplier_id: form.supplier_id || null,
-      quantity: Number(form.quantity),
-      reorder_warning_quantity: Number(form.reorder_warning_quantity),
+      quantity: normalizeQuantity(form.quantity, form.unit_type),
+      reorder_warning_quantity: normalizeQuantity(form.reorder_warning_quantity, form.unit_type),
       expiry_date: form.expiry_date || null,
       expiry_warning_months: Number(form.expiry_warning_months || 3),
       cost_price: Number(form.cost_price || 0),
@@ -86,18 +97,18 @@ export default function AddEditItemModal({ item, onClose, onSaved }) {
             </div>
             <div>
               <label className={label}>Unit</label>
-              <select className={input} value={form.unit_type} onChange={e => set('unit_type', e.target.value)}>
+              <select className={input} value={form.unit_type} onChange={e => setUnit(e.target.value)}>
                 <option value="piece">Pieces</option>
                 <option value="kg">Kg</option>
               </select>
             </div>
             <div>
               <label className={label}>Quantity</label>
-              <input className={input} type="number" step="0.001" min="0" value={form.quantity} onChange={e => set('quantity', e.target.value)} />
+              <input className={input} {...quantityInputProps(form.unit_type)} value={form.quantity} onChange={e => setQuantity('quantity', e.target.value)} onBlur={e => set('quantity', normalizeQuantity(e.target.value, form.unit_type))} />
             </div>
             <div>
               <label className={label}>Warn under</label>
-              <input className={input} type="number" step="0.001" min="0" value={form.reorder_warning_quantity} onChange={e => set('reorder_warning_quantity', e.target.value)} />
+              <input className={input} {...quantityInputProps(form.unit_type)} value={form.reorder_warning_quantity} onChange={e => setQuantity('reorder_warning_quantity', e.target.value)} onBlur={e => set('reorder_warning_quantity', normalizeQuantity(e.target.value, form.unit_type))} />
             </div>
           </div>
           <div className="grid md:grid-cols-2 gap-3">

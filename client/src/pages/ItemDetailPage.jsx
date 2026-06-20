@@ -6,6 +6,7 @@ import AddEditItemModal from '../components/AddEditItemModal'
 import StatusBadge from '../components/StatusBadge'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, dateTime, expiryClasses, money, qty, stockClasses } from '../lib/format'
+import { normalizeQuantity, quantityStep, sanitizeQuantityInput } from '../lib/quantity'
 
 function ExpiryStatus({ item }) {
   const labels = { none: 'No expiry', ok: 'OK', warning: 'Expiring soon', expired: 'Expired' }
@@ -45,9 +46,10 @@ export default function ItemDetailPage() {
   useEffect(() => { fetchItem() }, [id])
 
   const adjust = async () => {
-    if (!Number(adjustment)) return toast.error('Enter a non-zero adjustment')
+    const normalizedAdjustment = normalizeQuantity(adjustment, item.unit_type)
+    if (!normalizedAdjustment) return toast.error('Enter a non-zero adjustment')
     try {
-      await api.patch(`/api/items/${id}/quantity`, { adjustment: Number(adjustment), notes })
+      await api.patch(`/api/items/${id}/quantity`, { adjustment: normalizedAdjustment, notes })
       toast.success('Stock adjusted')
       setAdjustment('')
       setNotes('')
@@ -55,6 +57,11 @@ export default function ItemDetailPage() {
     } catch (err) {
       toast.error(err.response?.data?.error || 'Adjustment failed')
     }
+  }
+
+  const setAdjustmentValue = (value) => {
+    const sanitized = sanitizeQuantityInput(value, item.unit_type, { allowNegative: true })
+    if (sanitized !== null) setAdjustment(sanitized)
   }
 
   const remove = async () => {
@@ -132,7 +139,7 @@ export default function ItemDetailPage() {
         <div className="space-y-4">
           <div className="bg-white rounded-lg border border-slate-200 p-4 space-y-3">
             <h2 className="font-semibold flex items-center gap-2"><SlidersHorizontal size={16} /> Adjust stock</h2>
-            <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" type="number" step="0.001" placeholder="Use negative to remove" value={adjustment} onChange={e => setAdjustment(e.target.value)} />
+            <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" type="number" step={quantityStep(item.unit_type)} placeholder="Use negative to remove" value={adjustment} onChange={e => setAdjustmentValue(e.target.value)} onBlur={e => setAdjustment(normalizeQuantity(e.target.value, item.unit_type))} />
             <input className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" placeholder="Notes" value={notes} onChange={e => setNotes(e.target.value)} />
             <button onClick={adjust} className="w-full rounded-md bg-slate-900 text-white py-2 text-sm font-semibold hover:bg-slate-800">Apply adjustment</button>
           </div>

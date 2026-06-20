@@ -46,7 +46,10 @@ export const dateInputValue = (value) => value ? String(value).slice(0, 10) : ''
 
 export const qty = (value, unit = 'piece') => {
   const number = Number(value || 0)
-  return `${number.toLocaleString(undefined, { maximumFractionDigits: unit === 'kg' ? 3 : 0 })} ${unit === 'kg' ? 'kg' : 'pcs'}`
+  return `${number.toLocaleString(undefined, {
+    minimumFractionDigits: unit === 'kg' ? 2 : 0,
+    maximumFractionDigits: unit === 'kg' ? 2 : 0,
+  })} ${unit === 'kg' ? 'kg' : 'pcs'}`
 }
 
 export const stockClasses = {
