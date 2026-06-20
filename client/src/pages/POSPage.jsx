@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Barcode, CalendarDays, Minus, PackagePlus, Plus, ScanLine, Trash2, X } from 'lucide-react'
+import { Banknote, Barcode, CalendarDays, Camera, Minus, PackagePlus, Plus, ScanLine, Trash2, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, localDateInputValue, money, qty } from '../lib/format'
@@ -8,6 +8,11 @@ import { normalizeQuantity, quantityInputProps, sanitizeQuantityInput } from '..
 export default function POSPage() {
   const api = useApi()
   const inputRef = useRef(null)
+  const videoRef = useRef(null)
+  const streamRef = useRef(null)
+  const scanLoopRef = useRef(null)
+  const scannerControlsRef = useRef(null)
+  const scannedCodeRef = useRef('')
   const [barcode, setBarcode] = useState('')
   const [cart, setCart] = useState([])
   const [cartDiscount, setCartDiscount] = useState(0)
@@ -15,7 +20,19 @@ export default function POSPage() {
   const [historyDate, setHistoryDate] = useState(localDateInputValue())
   const [salesHistory, setSalesHistory] = useState([])
   const [showOther, setShowOther] = useState(false)
+  const [showPayment, setShowPayment] = useState(false)
+  const [showScanner, setShowScanner] = useState(false)
+  const [scanError, setScanError] = useState('')
+  const [receivedUsd, setReceivedUsd] = useState('')
+  const [returnUsd, setReturnUsd] = useState('')
+  const [exchangeRate, setExchangeRate] = useState(90000)
   const [otherItem, setOtherItem] = useState({ barcode: '', name: 'Other', quantity: 1, unit_price: '', unit_type: 'piece' })
+  const cameraConstraints = {
+    facingMode: { ideal: 'environment' },
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    focusMode: { ideal: 'continuous' },
+  }
 
   const fetchSalesHistory = async () => {
     const res = await api.get(`/api/pos/sales?date=${historyDate}`)
@@ -50,6 +67,124 @@ export default function POSPage() {
     const res = await api.get(`/api/items/barcode/${encodeURIComponent(code)}`)
     addItemToCart(res.data)
   }, [api, addItemToCart])
+
+  const stopCameraScanner = useCallback(() => {
+    if (scanLoopRef.current) window.cancelAnimationFrame(scanLoopRef.current)
+    scanLoopRef.current = null
+    scannerControlsRef.current?.stop()
+    scannerControlsRef.current = null
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    streamRef.current = null
+    scannedCodeRef.current = ''
+    setShowScanner(false)
+  }, [])
+
+  useEffect(() => () => {
+    if (scanLoopRef.current) window.cancelAnimationFrame(scanLoopRef.current)
+    scannerControlsRef.current?.stop()
+    streamRef.current?.getTracks().forEach(track => track.stop())
+  }, [])
+
+  const handleScannedBarcode = useCallback(async (code) => {
+    try {
+      await lookupAndAddBarcode(code)
+      toast.success(`Scanned ${code}`)
+      setBarcode('')
+      stopCameraScanner()
+      inputRef.current?.focus()
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Barcode not found')
+    }
+  }, [lookupAndAddBarcode, stopCameraScanner])
+
+  const waitForScannerVideo = () => new Promise(resolve => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))
+  })
+
+  const openCameraScanner = async () => {
+    setScanError('')
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setScanError('Camera access is not available on this device.')
+      setShowScanner(true)
+      return
+    }
+
+    try {
+      setShowScanner(true)
+      await waitForScannerVideo()
+      if (!videoRef.current) throw new Error('Scanner video is not ready')
+
+      if ('BarcodeDetector' in window) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: cameraConstraints,
+          audio: false,
+        })
+        streamRef.current = stream
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          await videoRef.current.play()
+        }
+
+        const detector = new window.BarcodeDetector({
+          formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf'],
+        })
+
+        const scan = async () => {
+          if (!videoRef.current || !streamRef.current) return
+          try {
+            const codes = await detector.detect(videoRef.current)
+            const rawValue = codes[0]?.rawValue
+            if (rawValue) {
+              await handleScannedBarcode(rawValue.trim())
+              return
+            }
+          } catch {
+            setScanError('Could not read the barcode. Try better lighting or move closer.')
+          }
+          scanLoopRef.current = window.requestAnimationFrame(scan)
+        }
+
+        scanLoopRef.current = window.requestAnimationFrame(scan)
+        return
+      }
+
+      const [{ BrowserMultiFormatReader }, { BarcodeFormat, DecodeHintType }] = await Promise.all([
+        import('@zxing/browser'),
+        import('@zxing/library'),
+      ])
+      const hints = new Map()
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.EAN_13,
+        BarcodeFormat.EAN_8,
+        BarcodeFormat.UPC_A,
+        BarcodeFormat.UPC_E,
+        BarcodeFormat.CODE_128,
+        BarcodeFormat.CODE_39,
+        BarcodeFormat.ITF,
+      ])
+      const reader = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 60,
+        delayBetweenScanSuccess: 250,
+        tryPlayVideoTimeout: 5000,
+      })
+      scannerControlsRef.current = await reader.decodeFromConstraints(
+        { video: cameraConstraints, audio: false },
+        videoRef.current,
+        async (result) => {
+          const rawValue = result?.getText?.()
+          if (!rawValue || scannedCodeRef.current) return
+          scannedCodeRef.current = rawValue
+          await handleScannedBarcode(rawValue.trim())
+        }
+      )
+    } catch {
+      setScanError('Camera permission was denied or no camera was found.')
+      scannerControlsRef.current?.stop()
+      scannerControlsRef.current = null
+      streamRef.current?.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+  }
 
   useEffect(() => {
     const code = barcode.trim()
@@ -138,11 +273,43 @@ export default function POSPage() {
   const subtotal = useMemo(() => cart.reduce((sum, line) => sum + lineTotal(line), 0), [cart])
   const cartDiscountAmount = subtotal * (percent(cartDiscount) / 100)
   const total = Math.max(0, subtotal - cartDiscountAmount)
+  const paidUsd = Number(receivedUsd || 0)
+  const rate = Math.max(0, Number(String(exchangeRate || 0).replace(/,/g, '')))
+  const changeUsd = Math.max(0, paidUsd - total)
+  const returnUsdAmount = Math.min(changeUsd, Math.max(0, Number(returnUsd || 0)))
+  const returnLbpAmount = Math.max(0, changeUsd - returnUsdAmount)
+  const changeLbp = Math.round(returnLbpAmount * rate)
+  const remainingUsd = Math.max(0, total - paidUsd)
+  const lbp = (value) => `${Math.round(Number(value || 0)).toLocaleString()} LBP`
+  const setRateValue = (value) => {
+    const digits = value.replace(/\D/g, '')
+    setExchangeRate(digits ? Number(digits).toLocaleString() : '')
+  }
+
+  const setReceivedPayment = (value) => {
+    const nextPaidUsd = Number(value || 0)
+    const nextChangeUsd = Math.max(0, nextPaidUsd - total)
+    setReceivedUsd(value)
+    setReturnUsd(nextChangeUsd ? nextChangeUsd.toFixed(2) : '')
+  }
+
+  const openPayment = () => {
+    if (!cart.length) return toast.error('Cart is empty')
+    const over = cart.find(line => !line.custom && Number(line.quantity) > Number(line.available))
+    if (over) return toast.error(`Insufficient stock for ${over.name}`)
+    const initialReceived = total ? Math.ceil(total) : 0
+    const initialChange = Math.max(0, initialReceived - total)
+    setReceivedUsd(initialReceived ? String(initialReceived) : '')
+    setReturnUsd(initialChange ? initialChange.toFixed(2) : '')
+    setExchangeRate(Number(exchangeRate || 0).toLocaleString())
+    setShowPayment(true)
+  }
 
   const checkout = async () => {
     if (!cart.length) return toast.error('Cart is empty')
     const over = cart.find(line => !line.custom && Number(line.quantity) > Number(line.available))
     if (over) return toast.error(`Insufficient stock for ${over.name}`)
+    if (paidUsd < total) return toast.error(`Customer still owes ${money(remainingUsd)}`)
     setCheckingOut(true)
     try {
       await api.post('/api/pos/sales', {
@@ -161,6 +328,9 @@ export default function POSPage() {
       toast.success('Sale completed and stock deducted')
       setCart([])
       setCartDiscount(0)
+      setShowPayment(false)
+      setReceivedUsd('')
+      setReturnUsd('')
       fetchSalesHistory().catch(() => {})
       inputRef.current?.focus()
     } catch (err) {
@@ -195,10 +365,37 @@ export default function POSPage() {
         <button className="px-4 rounded-md bg-emerald-700 text-white font-semibold hover:bg-emerald-800 inline-flex items-center gap-2">
           <ScanLine size={18} /> Add
         </button>
+        <button type="button" onClick={openCameraScanner} className="px-4 py-3 rounded-md border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 inline-flex items-center gap-2">
+          <Camera size={18} /> Camera
+        </button>
         <button type="button" onClick={openOther} className="px-4 py-3 rounded-md border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 inline-flex items-center gap-2">
           <PackagePlus size={18} /> Other
         </button>
       </form>
+
+      {showScanner && (
+        <div className="fixed inset-0 z-50 bg-black/60 p-4 flex items-center justify-center">
+          <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="font-semibold flex items-center gap-2"><Camera size={18} /> Scan barcode</h2>
+              <button type="button" onClick={stopCameraScanner} className="p-1 rounded-md hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="p-4 space-y-3">
+              {scanError ? (
+                <div className="rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+                  {scanError}
+                </div>
+              ) : (
+                <div className="relative overflow-hidden rounded-md bg-slate-950 aspect-video">
+                  <video ref={videoRef} className="h-full w-full object-cover" playsInline muted />
+                  <div className="absolute inset-x-4 top-1/2 h-28 -translate-y-1/2 rounded-md border-2 border-emerald-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]" />
+                </div>
+              )}
+              <p className="text-xs text-slate-500">Point the camera at the barcode. The item will be added automatically when detected.</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showOther && (
         <form onSubmit={addOther} className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
@@ -298,11 +495,110 @@ export default function POSPage() {
             <p className="mt-1 text-xs text-slate-400">{money(cartDiscountAmount)} off</p>
           </div>
           <div className="border-t border-slate-100 pt-3 flex justify-between text-lg"><span>Total</span><strong>{money(total)}</strong></div>
-          <button onClick={checkout} disabled={checkingOut || !cart.length} className="w-full rounded-md bg-emerald-700 text-white py-3 font-semibold hover:bg-emerald-800 disabled:opacity-50">
-            {checkingOut ? 'Completing...' : 'Complete Sale'}
+          <button onClick={openPayment} disabled={checkingOut || !cart.length} className="w-full rounded-md bg-emerald-700 text-white py-3 font-semibold hover:bg-emerald-800 disabled:opacity-50">
+            Complete Sale
           </button>
         </div>
       </div>
+
+      {showPayment && (
+        <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-center justify-center">
+          <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-full max-w-md">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="font-semibold flex items-center gap-2"><Banknote size={18} /> Payment & Change</h2>
+              <button type="button" onClick={() => setShowPayment(false)} className="p-1 rounded-md hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-500">Total</span>
+                <strong className="text-2xl">{money(total)}</strong>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Received USD</label>
+                  <input
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={receivedUsd}
+                    onChange={e => setReceivedPayment(e.target.value)}
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">USD rate</label>
+                  <input
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    type="text"
+                    inputMode="numeric"
+                    value={exchangeRate}
+                    onChange={e => setRateValue(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                {[total, 5, 10, 20, 50].map((value, index) => (
+                  <button
+                    key={`${value}-${index}`}
+                    type="button"
+                    onClick={() => setReceivedPayment(String(Number(value).toFixed(2)))}
+                    className="flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs font-semibold hover:bg-slate-50"
+                  >
+                    {money(value)}
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 flex items-center justify-between">
+                <span className="text-sm text-slate-500">Total change</span>
+                <strong>{money(changeUsd)}</strong>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Return USD</label>
+                  <input
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max={changeUsd}
+                    value={returnUsd}
+                    onChange={e => setReturnUsd(e.target.value)}
+                    onBlur={e => setReturnUsd(String(Math.min(changeUsd, Math.max(0, Number(e.target.value || 0))).toFixed(2)))}
+                  />
+                  <p className="mt-1 text-xs text-slate-400">Cash back in dollars</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Return LBP</label>
+                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold min-h-[38px] flex items-center">
+                    {lbp(changeLbp)}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">{money(returnLbpAmount)} at {rate.toLocaleString()}</p>
+                </div>
+              </div>
+
+              {remainingUsd > 0 && (
+                <div className="rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+                  Remaining: {money(remainingUsd)} or {lbp(remainingUsd * rate)}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={checkout}
+                disabled={checkingOut || paidUsd < total}
+                className="w-full rounded-md bg-emerald-700 text-white py-3 font-semibold hover:bg-emerald-800 disabled:opacity-50"
+              >
+                {checkingOut ? 'Completing...' : 'Confirm Sale'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">

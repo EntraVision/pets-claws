@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Loader2, X } from 'lucide-react'
+import { Camera, Loader2, X } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
 import { dateInputValue } from '../lib/format'
 import { normalizeQuantity, quantityInputProps, sanitizeQuantityInput } from '../lib/quantity'
+import BarcodeScannerModal from './BarcodeScannerModal'
 
 const empty = {
   name: '', sku: '', barcode: '', description: '', category_id: '', supplier_id: '',
@@ -12,18 +13,26 @@ const empty = {
 
 export default function AddEditItemModal({ item, onClose, onSaved }) {
   const api = useApi()
-  const [form, setForm] = useState(item ? {
-    ...empty,
-    ...item,
-    category_id: item.category_id || '',
-    supplier_id: item.supplier_id || '',
-    expiry_date: dateInputValue(item.expiry_date),
-    expiry_warning_months: item.expiry_warning_months || 3,
-  } : empty)
+  const [form, setForm] = useState(() => {
+    if (!item) return empty
+    const unit = item.unit_type === 'kg' ? 'kg' : 'piece'
+    return {
+      ...empty,
+      ...item,
+      unit_type: unit,
+      quantity: normalizeQuantity(item.quantity, unit),
+      reorder_warning_quantity: normalizeQuantity(item.reorder_warning_quantity, unit),
+      category_id: item.category_id || '',
+      supplier_id: item.supplier_id || '',
+      expiry_date: dateInputValue(item.expiry_date),
+      expiry_warning_months: item.expiry_warning_months || 3,
+    }
+  })
   const [categories, setCategories] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false)
 
   useEffect(() => {
     Promise.all([api.get('/api/categories'), api.get('/api/suppliers')])
@@ -87,7 +96,17 @@ export default function AddEditItemModal({ item, onClose, onSaved }) {
             </div>
             <div>
               <label className={label}>Barcode</label>
-              <input className={input} value={form.barcode || ''} onChange={e => set('barcode', e.target.value)} />
+              <div className="flex gap-2">
+                <input className={input} value={form.barcode || ''} onChange={e => set('barcode', e.target.value)} />
+                <button
+                  type="button"
+                  onClick={() => setShowBarcodeScanner(true)}
+                  className="shrink-0 rounded-md border border-slate-300 px-3 text-slate-700 hover:bg-slate-50"
+                  title="Scan barcode with camera"
+                >
+                  <Camera size={17} />
+                </button>
+              </div>
             </div>
           </div>
           <div className="grid md:grid-cols-4 gap-3">
@@ -175,6 +194,15 @@ export default function AddEditItemModal({ item, onClose, onSaved }) {
           </button>
         </div>
       </div>
+      {showBarcodeScanner && (
+        <BarcodeScannerModal
+          onClose={() => setShowBarcodeScanner(false)}
+          onDetected={(code) => {
+            set('barcode', code)
+            setShowBarcodeScanner(false)
+          }}
+        />
+      )}
     </div>
   )
 }
