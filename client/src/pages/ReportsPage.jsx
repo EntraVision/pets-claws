@@ -1,5 +1,6 @@
+/* eslint-disable react/prop-types */
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, CalendarDays, CheckCircle2, ReceiptText, ShoppingBag, TrendingUp, Wallet } from 'lucide-react'
+import { AlertTriangle, CalendarDays, CheckCircle2, ReceiptText, RotateCcw, ShoppingBag, TrendingUp, Wallet } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, localDateInputValue, money, qty } from '../lib/format'
@@ -52,7 +53,7 @@ export default function ReportsPage() {
       .then(res => setReport(res.data))
       .catch(() => toast.error('Failed to load report'))
       .finally(() => setLoading(false))
-  }, [period, reportDate])
+  }, [api, period, reportDate])
 
   const drawerValue = cashDrawer === '' ? null : Number(cashDrawer)
   const expectedCash = number(report?.pure_cash)
@@ -65,6 +66,13 @@ export default function ReportsPage() {
     if (period === 'day') return dateOnly(report.start_date)
     return `${dateOnly(report.start_date)} to ${dateOnly(report.end_date)}`
   }, [period, report, reportDate, month])
+  const activityRows = useMemo(
+    () => [
+      ...(report?.sales || []).map(sale => ({ ...sale, activity_type: 'sale' })),
+      ...(report?.returns || []).map(returned => ({ ...returned, activity_type: 'return' })),
+    ].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)),
+    [report]
+  )
 
   return (
     <div className="space-y-5">
@@ -103,12 +111,15 @@ export default function ReportsPage() {
         <p className="text-xs text-slate-500 mb-2">Report period: {periodLabel} · Asia/Beirut</p>
         <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <Metric icon={Wallet} label="Pure Cash" value={money(report?.pure_cash)} />
-          <Metric icon={ReceiptText} label="Sales Revenue" value={money(report?.sales_total)} />
+          <Metric icon={ReceiptText} label="Net Sales Revenue" value={money(report?.sales_total)} />
+          <Metric icon={RotateCcw} label="Returns" value={money(report?.returns_total)} tone="red" />
           <Metric icon={ReceiptText} label="Expenses" value={money(report?.expenses_total)} tone="slate" />
           <Metric icon={ShoppingBag} label="Paid Suppliers" value={money(report?.supplier_payments_total)} tone="yellow" />
           <Metric icon={TrendingUp} label="Gross Margin" value={money(report?.gross_margin_total)} />
           <Metric icon={ShoppingBag} label="Items Sold" value={qty(report?.stock_output_total)} tone="slate" />
+          <Metric icon={RotateCcw} label="Items Returned" value={qty(report?.stock_return_total)} tone="red" />
           <Metric icon={ReceiptText} label="Sales Count" value={report?.sales_count ?? 0} tone="slate" />
+          <Metric icon={RotateCcw} label="Return Count" value={report?.returns_count ?? 0} tone="slate" />
           <Metric icon={ReceiptText} label="Expense Count" value={report?.expenses_count ?? 0} tone="slate" />
         </div>
       </div>
@@ -147,24 +158,30 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody>
-                {(report?.sales || []).map(sale => (
-                  <tr key={sale.id} className="border-t border-slate-100 align-top">
-                    <td className="px-4 py-3 font-semibold">#{sale.id}</td>
+                {activityRows.map(row => (
+                  <tr key={`${row.activity_type}-${row.id}`} className={`border-t border-slate-100 align-top ${row.activity_type === 'return' ? 'bg-red-50/35' : ''}`}>
+                    <td className={`px-4 py-3 font-semibold ${row.activity_type === 'return' ? 'text-red-700' : ''}`}>
+                      {row.activity_type === 'return' ? `Return #${row.id}` : `#${row.id}`}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="space-y-1">
-                        {(sale.lines || []).map(line => (
+                        {(row.lines || []).map(line => (
                           <div key={line.id} className="flex justify-between gap-3">
                             <span className="font-medium">{line.item_name}</span>
-                            <span className="text-xs text-slate-500">{qty(line.quantity, line.unit_type)} · {money(line.line_total)}</span>
+                            <span className={`text-xs ${row.activity_type === 'return' ? 'text-red-600' : 'text-slate-500'}`}>
+                              {row.activity_type === 'return' ? '-' : ''}{qty(line.quantity, line.unit_type)} - {row.activity_type === 'return' ? '-' : ''}{money(line.line_total)}
+                            </span>
                           </div>
                         ))}
                       </div>
                     </td>
-                    <td className="px-4 py-3 font-semibold">{money(sale.total)}</td>
-                    <td className="px-4 py-3 text-slate-500">{sale.created_by_name || '-'}</td>
+                    <td className={`px-4 py-3 font-semibold ${row.activity_type === 'return' ? 'text-red-700' : ''}`}>
+                      {row.activity_type === 'return' ? '-' : ''}{money(row.total)}
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">{row.created_by_name || '-'}</td>
                   </tr>
                 ))}
-                {!loading && !report?.sales?.length && <tr><td className="px-4 py-10 text-center text-slate-400" colSpan="4">No sales in this period</td></tr>}
+                {!loading && !activityRows.length && <tr><td className="px-4 py-10 text-center text-slate-400" colSpan="4">No sales or returns in this period</td></tr>}
                 {loading && <tr><td className="px-4 py-10 text-center text-slate-400" colSpan="4">Loading report...</td></tr>}
               </tbody>
             </table>

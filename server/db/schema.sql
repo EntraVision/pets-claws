@@ -105,6 +105,27 @@ CREATE TABLE IF NOT EXISTS sale_lines (
   line_total NUMERIC(12,2) NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS returns (
+  id SERIAL PRIMARY KEY,
+  subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
+  total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS return_lines (
+  id SERIAL PRIMARY KEY,
+  return_id INTEGER NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+  item_name VARCHAR(255) NOT NULL,
+  barcode VARCHAR(100),
+  quantity NUMERIC(12,3) NOT NULL CHECK (quantity > 0),
+  unit_type VARCHAR(20) NOT NULL,
+  unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+  unit_cost NUMERIC(12,2) NOT NULL DEFAULT 0,
+  line_total NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS expense_categories (
   id SERIAL PRIMARY KEY,
   name VARCHAR(100) UNIQUE NOT NULL,
@@ -128,5 +149,6 @@ CREATE INDEX IF NOT EXISTS idx_items_category ON items(category_id);
 CREATE INDEX IF NOT EXISTS idx_items_supplier ON items(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_items_expiry_date ON items(expiry_date);
 CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
+CREATE INDEX IF NOT EXISTS idx_returns_created_at ON returns(created_at);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
 CREATE INDEX IF NOT EXISTS idx_purchases_paid_status ON purchases(paid_status);

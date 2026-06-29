@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowUpFromLine, CalendarDays, ReceiptText, ShoppingBag, TrendingUp, Wallet } from 'lucide-react'
+import { ArrowUpFromLine, CalendarDays, ReceiptText, RotateCcw, ShoppingBag, TrendingUp, Wallet } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, localDateInputValue, money, qty } from '../lib/format'
@@ -15,6 +15,7 @@ function Metric({ icon: Icon, label, value, tone = 'emerald' }) {
   const colors = {
     emerald: 'bg-emerald-100 text-emerald-700',
     yellow: 'bg-yellow-100 text-yellow-700',
+    red: 'bg-red-100 text-red-700',
     slate: 'bg-slate-100 text-slate-700',
     teal: 'bg-teal-100 text-teal-700',
   }
@@ -55,7 +56,7 @@ export default function MonthlyReportPage() {
   const totals = report?.totals || {}
   const activeDays = useMemo(
     () => (report?.days || []).filter(day =>
-      number(day.sales_total) || number(day.expenses_total) || number(day.supplier_payments_total)
+      number(day.sales_total) || number(day.returns_total) || number(day.expenses_total) || number(day.supplier_payments_total)
     ).length,
     [report]
   )
@@ -84,11 +85,13 @@ export default function MonthlyReportPage() {
 
       <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <Metric icon={Wallet} label="Pure Cash" value={money(totals.pure_cash)} />
-        <Metric icon={ReceiptText} label="Sales Revenue" value={money(totals.sales_total)} />
+        <Metric icon={ReceiptText} label="Net Sales Revenue" value={money(totals.sales_total)} />
+        <Metric icon={RotateCcw} label="Returns" value={money(totals.returns_total)} tone="red" />
         <Metric icon={ReceiptText} label="Expenses" value={money(totals.expenses_total)} tone="slate" />
         <Metric icon={ShoppingBag} label="Paid Suppliers" value={money(totals.supplier_payments_total)} tone="yellow" />
         <Metric icon={TrendingUp} label="Gross Margin" value={money(totals.gross_margin_total)} tone="teal" />
         <Metric icon={ArrowUpFromLine} label="Items Sold" value={qty(totals.stock_output_total)} tone="slate" />
+        <Metric icon={RotateCcw} label="Items Returned" value={qty(totals.stock_return_total)} tone="red" />
         <Metric icon={CalendarDays} label="Active Sales Days" value={activeDays} tone="slate" />
         <Metric icon={TrendingUp} label="Avg Active-Day Sales" value={money(averageDailySales)} tone="teal" />
       </div>
@@ -114,10 +117,12 @@ export default function MonthlyReportPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-3">
                   <DailyValue label="Sales" value={money(day.sales_total)} />
+                  <DailyValue label="Returns" value={money(day.returns_total)} tone="text-red-600" />
                   <DailyValue label="Expenses" value={money(day.expenses_total)} />
                   <DailyValue label="Supplier" value={money(day.supplier_payments_total)} />
                   <DailyValue label="Margin" value={money(day.gross_margin_total)} />
                   <DailyValue label="Sold" value={qty(day.stock_output_total)} />
+                  <DailyValue label="Returned" value={qty(day.stock_return_total)} tone="text-red-600" />
                   <DailyValue label="Activity" value={`${day.sales_count} sales / ${day.expenses_count} expenses`} />
                 </div>
               </div>
@@ -161,10 +166,12 @@ export default function MonthlyReportPage() {
                   <th className="text-left px-3 py-2 w-14">Day</th>
                   <th className="text-left px-3 py-2 w-28">Date</th>
                   <th className="text-left px-3 py-2">Sales</th>
+                  <th className="text-left px-3 py-2">Returns</th>
                   <th className="text-left px-3 py-2">Expenses</th>
                   <th className="text-left px-3 py-2">Supplier</th>
                   <th className="text-left px-3 py-2">Margin</th>
                   <th className="text-left px-3 py-2">Sold</th>
+                  <th className="text-left px-3 py-2">Returned</th>
                   <th className="text-left px-3 py-2">Cash</th>
                 </tr>
               </thead>
@@ -178,16 +185,21 @@ export default function MonthlyReportPage() {
                       <p className="text-xs text-slate-400">{day.sales_count} sales</p>
                     </td>
                     <td className="px-3 py-3">
+                      <p className="font-medium text-red-600">{money(day.returns_total)}</p>
+                      <p className="text-xs text-slate-400">{day.returns_count} returns</p>
+                    </td>
+                    <td className="px-3 py-3">
                       <p>{money(day.expenses_total)}</p>
                       <p className="text-xs text-slate-400">{day.expenses_count} expenses</p>
                     </td>
                     <td className="px-3 py-3">{money(day.supplier_payments_total)}</td>
                     <td className="px-3 py-3">{money(day.gross_margin_total)}</td>
                     <td className="px-3 py-3">{qty(day.stock_output_total)}</td>
+                    <td className="px-3 py-3 text-red-600">{qty(day.stock_return_total)}</td>
                     <td className={`px-3 py-3 font-semibold ${number(day.pure_cash) < 0 ? 'text-red-600' : 'text-slate-900'}`}>{money(day.pure_cash)}</td>
                   </tr>
                 ))}
-                {loading && <tr><td colSpan="8" className="px-4 py-10 text-center text-slate-400">Loading monthly report...</td></tr>}
+                {loading && <tr><td colSpan="10" className="px-4 py-10 text-center text-slate-400">Loading monthly report...</td></tr>}
               </tbody>
             </table>
           </div>

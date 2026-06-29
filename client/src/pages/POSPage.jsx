@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Banknote, Barcode, CalendarDays, Camera, Minus, PackagePlus, Plus, ScanLine, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Banknote, Barcode, CalendarDays, Camera, Minus, PackagePlus, Plus, RotateCcw, ScanLine, Trash2, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useApi } from '../hooks/useApi'
 import { dateOnly, localDateInputValue, money, qty } from '../lib/format'
@@ -8,23 +8,31 @@ import { normalizeQuantity, quantityInputProps, sanitizeQuantityInput } from '..
 export default function POSPage() {
   const api = useApi()
   const inputRef = useRef(null)
+  const returnInputRef = useRef(null)
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const scanLoopRef = useRef(null)
   const scannerControlsRef = useRef(null)
   const scannedCodeRef = useRef('')
+  const scannerTargetRef = useRef('sale')
   const [barcode, setBarcode] = useState('')
   const [cart, setCart] = useState([])
+  const [returnCart, setReturnCart] = useState([])
   const [cartDiscount, setCartDiscount] = useState(0)
   const [checkingOut, setCheckingOut] = useState(false)
+  const [returning, setReturning] = useState(false)
   const [historyDate, setHistoryDate] = useState(localDateInputValue())
   const [salesHistory, setSalesHistory] = useState([])
+  const [returnsHistory, setReturnsHistory] = useState([])
   const [showOther, setShowOther] = useState(false)
   const [showPayment, setShowPayment] = useState(false)
+  const [showReturn, setShowReturn] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
   const [scanError, setScanError] = useState('')
+  const [scannerTarget, setScannerTarget] = useState('sale')
   const [receivedUsd, setReceivedUsd] = useState('')
   const [returnUsd, setReturnUsd] = useState('')
+  const [returnBarcode, setReturnBarcode] = useState('')
   const [exchangeRate, setExchangeRate] = useState(90000)
   const [otherItem, setOtherItem] = useState({ barcode: '', name: 'Other', quantity: 1, unit_price: '', unit_type: 'piece' })
   const cameraConstraints = {
@@ -34,14 +42,20 @@ export default function POSPage() {
     focusMode: { ideal: 'continuous' },
   }
 
-  const fetchSalesHistory = async () => {
+  const fetchSalesHistory = useCallback(async () => {
     const res = await api.get(`/api/pos/sales?date=${historyDate}`)
     setSalesHistory(res.data)
-  }
+  }, [api, historyDate])
+
+  const fetchReturnsHistory = useCallback(async () => {
+    const res = await api.get(`/api/pos/returns?date=${historyDate}`)
+    setReturnsHistory(res.data)
+  }, [api, historyDate])
 
   useEffect(() => {
     fetchSalesHistory().catch(() => toast.error('Failed to load sales history'))
-  }, [historyDate])
+    fetchReturnsHistory().catch(() => toast.error('Failed to load returns history'))
+  }, [fetchSalesHistory, fetchReturnsHistory])
 
   const addItemToCart = useCallback((item) => {
     setCart(prev => {
@@ -68,6 +82,23 @@ export default function POSPage() {
     addItemToCart(res.data)
   }, [api, addItemToCart])
 
+  const addItemToReturnCart = useCallback((item) => {
+    setReturnCart(prev => {
+      const existing = prev.find(line => line.item_id === item.id)
+      const step = item.unit_type === 'kg' ? 0.25 : 1
+      if (existing) {
+        const nextQuantity = normalizeQuantity(Number(existing.quantity) + step, item.unit_type)
+        return prev.map(line => line.item_id === item.id ? { ...line, quantity: nextQuantity } : line)
+      }
+      return [...prev, { cart_id: `return-${item.id}`, item_id: item.id, name: item.name, barcode: item.barcode, unit_type: item.unit_type, unit_price: Number(item.sale_price), quantity: step }]
+    })
+  }, [])
+
+  const lookupAndAddReturnBarcode = useCallback(async (code) => {
+    const res = await api.get(`/api/items/barcode/${encodeURIComponent(code)}`)
+    addItemToReturnCart(res.data)
+  }, [api, addItemToReturnCart])
+
   const stopCameraScanner = useCallback(() => {
     if (scanLoopRef.current) window.cancelAnimationFrame(scanLoopRef.current)
     scanLoopRef.current = null
@@ -87,22 +118,31 @@ export default function POSPage() {
 
   const handleScannedBarcode = useCallback(async (code) => {
     try {
-      await lookupAndAddBarcode(code)
+      const target = scannerTargetRef.current
+      if (target === 'return') {
+        await lookupAndAddReturnBarcode(code)
+        setReturnBarcode('')
+      } else {
+        await lookupAndAddBarcode(code)
+        setBarcode('')
+      }
       toast.success(`Scanned ${code}`)
-      setBarcode('')
       stopCameraScanner()
-      inputRef.current?.focus()
+      if (target === 'return') returnInputRef.current?.focus()
+      else inputRef.current?.focus()
     } catch (err) {
       toast.error(err.response?.data?.error || 'Barcode not found')
     }
-  }, [lookupAndAddBarcode, stopCameraScanner])
+  }, [lookupAndAddBarcode, lookupAndAddReturnBarcode, stopCameraScanner])
 
   const waitForScannerVideo = () => new Promise(resolve => {
     window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))
   })
 
-  const openCameraScanner = async () => {
+  const openCameraScanner = async (target = 'sale') => {
     setScanError('')
+    scannerTargetRef.current = target
+    setScannerTarget(target)
     if (!navigator.mediaDevices?.getUserMedia) {
       setScanError('Camera access is not available on this device.')
       setShowScanner(true)
@@ -209,6 +249,29 @@ export default function POSPage() {
     }
   }, [barcode, lookupAndAddBarcode])
 
+  useEffect(() => {
+    const code = returnBarcode.trim()
+    if (!code || !showReturn) return undefined
+
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      try {
+        await lookupAndAddReturnBarcode(code)
+        if (!cancelled) {
+          setReturnBarcode('')
+          returnInputRef.current?.focus()
+        }
+      } catch {
+        // Keep typing quiet; the Add button still reports invalid barcodes explicitly.
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [returnBarcode, showReturn, lookupAndAddReturnBarcode])
+
   const addByBarcode = async (e) => {
     e.preventDefault()
     const code = barcode.trim()
@@ -220,6 +283,24 @@ export default function POSPage() {
     } catch (err) {
       toast.error(err.response?.data?.error || 'Barcode not found')
     }
+  }
+
+  const addReturnByBarcode = async (e) => {
+    e.preventDefault()
+    const code = returnBarcode.trim()
+    if (!code) return
+    try {
+      await lookupAndAddReturnBarcode(code)
+      setReturnBarcode('')
+      returnInputRef.current?.focus()
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Barcode not found')
+    }
+  }
+
+  const openReturn = () => {
+    setShowReturn(true)
+    window.setTimeout(() => returnInputRef.current?.focus(), 0)
   }
 
   const openOther = () => {
@@ -257,6 +338,8 @@ export default function POSPage() {
 
   const update = (cartId, patch) => setCart(prev => prev.map(line => line.cart_id === cartId ? { ...line, ...patch } : line))
   const remove = (cartId) => setCart(prev => prev.filter(line => line.cart_id !== cartId))
+  const updateReturn = (cartId, patch) => setReturnCart(prev => prev.map(line => line.cart_id === cartId ? { ...line, ...patch } : line))
+  const removeReturn = (cartId) => setReturnCart(prev => prev.filter(line => line.cart_id !== cartId))
   const setOtherQuantity = (value) => {
     const sanitized = sanitizeQuantityInput(value, otherItem.unit_type)
     if (sanitized !== null) setOtherItem(prev => ({ ...prev, quantity: sanitized }))
@@ -265,12 +348,18 @@ export default function POSPage() {
     const sanitized = sanitizeQuantityInput(value, line.unit_type)
     if (sanitized !== null) update(line.cart_id, { quantity: sanitized })
   }
+  const updateReturnLineQuantity = (line, value) => {
+    const sanitized = sanitizeQuantityInput(value, line.unit_type)
+    if (sanitized !== null) updateReturn(line.cart_id, { quantity: sanitized })
+  }
 
   const lineBase = (line) => Math.max(0, Number(line.unit_price || 0) * Number(line.quantity || 0))
   const percent = (value) => Math.min(100, Math.max(0, Number(value || 0)))
   const lineDiscountAmount = (line) => lineBase(line) * (percent(line.discount_percent ?? line.discount) / 100)
   const lineTotal = (line) => Math.max(0, lineBase(line) - lineDiscountAmount(line))
-  const subtotal = useMemo(() => cart.reduce((sum, line) => sum + lineTotal(line), 0), [cart])
+  const returnLineTotal = (line) => Math.max(0, Number(line.unit_price || 0) * Number(line.quantity || 0))
+  const subtotal = cart.reduce((sum, line) => sum + lineTotal(line), 0)
+  const returnSubtotal = returnCart.reduce((sum, line) => sum + returnLineTotal(line), 0)
   const cartDiscountAmount = subtotal * (percent(cartDiscount) / 100)
   const total = Math.max(0, subtotal - cartDiscountAmount)
   const paidUsd = Number(receivedUsd || 0)
@@ -340,8 +429,35 @@ export default function POSPage() {
     }
   }
 
+  const submitReturn = async () => {
+    if (!returnCart.length) return toast.error('Return cart is empty')
+    const invalid = returnCart.find(line => !normalizeQuantity(line.quantity, line.unit_type) || Number(line.unit_price || 0) <= 0)
+    if (invalid) return toast.error(`Check return quantity and price for ${invalid.name}`)
+    setReturning(true)
+    try {
+      await api.post('/api/pos/returns', {
+        lines: returnCart.map(({ item_id, quantity, unit_price, unit_type }) => ({
+          item_id,
+          quantity: normalizeQuantity(quantity, unit_type),
+          unit_price: Number(unit_price || 0),
+        })),
+      })
+      toast.success('Return completed and stock corrected')
+      setReturnCart([])
+      setReturnBarcode('')
+      fetchReturnsHistory().catch(() => {})
+      returnInputRef.current?.focus()
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Return failed')
+    } finally {
+      setReturning(false)
+    }
+  }
+
   const historyTotal = salesHistory.reduce((sum, sale) => sum + Number(sale.total || 0), 0)
   const historyItems = salesHistory.reduce((sum, sale) => sum + (sale.lines || []).reduce((lineSum, line) => lineSum + Number(line.quantity || 0), 0), 0)
+  const returnsHistoryTotal = returnsHistory.reduce((sum, returned) => sum + Number(returned.total || 0), 0)
+  const returnsHistoryItems = returnsHistory.reduce((sum, returned) => sum + (returned.lines || []).reduce((lineSum, line) => lineSum + Number(line.quantity || 0), 0), 0)
 
   return (
     <div className="space-y-4">
@@ -365,11 +481,14 @@ export default function POSPage() {
         <button className="px-4 rounded-md bg-emerald-700 text-white font-semibold hover:bg-emerald-800 inline-flex items-center gap-2">
           <ScanLine size={18} /> Add
         </button>
-        <button type="button" onClick={openCameraScanner} className="px-4 py-3 rounded-md border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 inline-flex items-center gap-2">
+        <button type="button" onClick={() => openCameraScanner('sale')} className="px-4 py-3 rounded-md border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 inline-flex items-center gap-2">
           <Camera size={18} /> Camera
         </button>
         <button type="button" onClick={openOther} className="px-4 py-3 rounded-md border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 inline-flex items-center gap-2">
           <PackagePlus size={18} /> Other
+        </button>
+        <button type="button" onClick={openReturn} className="px-4 py-3 rounded-md border border-red-200 bg-red-50 text-red-700 font-semibold hover:bg-red-100 inline-flex items-center gap-2">
+          <RotateCcw size={18} /> Return Item
         </button>
       </form>
 
@@ -377,7 +496,7 @@ export default function POSPage() {
         <div className="fixed inset-0 z-50 bg-black/60 p-4 flex items-center justify-center">
           <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-full max-w-md overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="font-semibold flex items-center gap-2"><Camera size={18} /> Scan barcode</h2>
+              <h2 className="font-semibold flex items-center gap-2"><Camera size={18} /> Scan {scannerTarget === 'return' ? 'return' : 'sale'} barcode</h2>
               <button type="button" onClick={stopCameraScanner} className="p-1 rounded-md hover:bg-slate-100"><X size={18} /></button>
             </div>
             <div className="p-4 space-y-3">
@@ -430,6 +549,93 @@ export default function POSPage() {
           </div>
           <button className="rounded-md bg-slate-900 text-white px-4 py-2 text-sm font-semibold hover:bg-slate-800">Add Other to Cart</button>
         </form>
+      )}
+
+      {showReturn && (
+        <div className="bg-white border border-red-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-red-100 flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="font-semibold flex items-center gap-2 text-red-700"><RotateCcw size={18} /> Return items</h2>
+              <p className="text-xs text-slate-500">Scan a barcode, confirm quantity and refund price, then complete the return.</p>
+            </div>
+            <button type="button" onClick={() => setShowReturn(false)} className="p-1 rounded hover:bg-slate-100"><X size={16} /></button>
+          </div>
+
+          <div className="p-4 space-y-4">
+            <form onSubmit={addReturnByBarcode} className="flex gap-2 flex-wrap">
+              <div className="relative flex-1 min-w-[220px]">
+                <Barcode size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  ref={returnInputRef}
+                  value={returnBarcode}
+                  onChange={e => setReturnBarcode(e.target.value)}
+                  placeholder="Scan return barcode"
+                  className="w-full rounded-md border border-slate-300 pl-10 pr-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-red-400"
+                />
+              </div>
+              <button className="px-4 rounded-md bg-red-700 text-white font-semibold hover:bg-red-800 inline-flex items-center gap-2">
+                <ScanLine size={18} /> Add
+              </button>
+              <button type="button" onClick={() => openCameraScanner('return')} className="px-4 py-2.5 rounded-md border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 inline-flex items-center gap-2">
+                <Camera size={18} /> Camera
+              </button>
+            </form>
+
+            <div className="overflow-x-auto border border-slate-100 rounded-md">
+              <table className="w-full min-w-[680px] text-sm">
+                <thead className="bg-slate-50 text-xs text-slate-500">
+                  <tr>
+                    <th className="text-left px-4 py-2">Item</th>
+                    <th className="text-left px-4 py-2">Quantity</th>
+                    <th className="text-left px-4 py-2">Refund Price</th>
+                    <th className="text-left px-4 py-2">Refund Total</th>
+                    <th className="text-left px-4 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {returnCart.map(line => (
+                    <tr key={line.cart_id} className="border-t border-slate-100">
+                      <td className="px-4 py-3">
+                        <p className="font-semibold">{line.name}</p>
+                        <p className="text-xs text-slate-500 font-mono">{line.barcode}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => updateReturn(line.cart_id, { quantity: normalizeQuantity(Math.max(0, Number(line.quantity) - (line.unit_type === 'kg' ? 0.25 : 1)), line.unit_type) })} className="p-1 rounded hover:bg-slate-100" type="button"><Minus size={14} /></button>
+                          <input className="w-20 rounded-md border border-slate-300 px-2 py-1 text-sm" {...quantityInputProps(line.unit_type)} value={line.quantity} onChange={e => updateReturnLineQuantity(line, e.target.value)} onBlur={e => updateReturn(line.cart_id, { quantity: normalizeQuantity(e.target.value, line.unit_type) })} />
+                          <button onClick={() => updateReturn(line.cart_id, { quantity: normalizeQuantity(Number(line.quantity) + (line.unit_type === 'kg' ? 0.25 : 1), line.unit_type) })} className="p-1 rounded hover:bg-slate-100" type="button"><Plus size={14} /></button>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          className="w-24 rounded-md border border-slate-300 px-2 py-1 text-sm"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={line.unit_price}
+                          onChange={e => updateReturn(line.cart_id, { unit_price: e.target.value })}
+                        />
+                      </td>
+                      <td className="px-4 py-3 font-semibold">{money(returnLineTotal(line))}</td>
+                      <td className="px-4 py-3"><button onClick={() => removeReturn(line.cart_id)} type="button" className="p-1.5 rounded hover:bg-red-50 text-red-600"><Trash2 size={15} /></button></td>
+                    </tr>
+                  ))}
+                  {!returnCart.length && <tr><td colSpan="5" className="py-10 text-center text-slate-400">Scan an item to return</td></tr>}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-xs text-slate-500">Refund total</p>
+                <p className="text-xl font-bold text-red-700">{money(returnSubtotal)}</p>
+              </div>
+              <button type="button" onClick={submitReturn} disabled={returning || !returnCart.length} className="rounded-md bg-red-700 text-white px-5 py-3 font-semibold hover:bg-red-800 disabled:opacity-50">
+                {returning ? 'Completing...' : 'Complete Return'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="grid lg:grid-cols-[1fr_320px] gap-4">
@@ -666,6 +872,63 @@ export default function POSPage() {
               ))}
               {!salesHistory.length && (
                 <tr><td colSpan="6" className="px-4 py-10 text-center text-slate-400">No POS sales for this date</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100">
+          <h2 className="font-semibold">Daily Returns History</h2>
+          <p className="text-xs text-slate-500">Returned items for the selected date. These are subtracted from reports and added back to stock.</p>
+        </div>
+
+        <div className="grid sm:grid-cols-3 border-b border-slate-100">
+          <div className="px-4 py-3">
+            <p className="text-xs text-slate-500">Date</p>
+            <p className="font-semibold">{dateOnly(historyDate)}</p>
+          </div>
+          <div className="px-4 py-3">
+            <p className="text-xs text-slate-500">Returns Total</p>
+            <p className="font-semibold text-red-700">{money(returnsHistoryTotal)}</p>
+          </div>
+          <div className="px-4 py-3">
+            <p className="text-xs text-slate-500">Items Returned</p>
+            <p className="font-semibold">{returnsHistoryItems.toLocaleString(undefined, { maximumFractionDigits: 3 })}</p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500">
+              <tr>
+                <th className="text-left px-4 py-2">Return</th>
+                <th className="text-left px-4 py-2">Items</th>
+                <th className="text-left px-4 py-2">Total</th>
+                <th className="text-left px-4 py-2">Cashier</th>
+              </tr>
+            </thead>
+            <tbody>
+              {returnsHistory.map(returned => (
+                <tr key={returned.id} className="border-t border-slate-100 align-top">
+                  <td className="px-4 py-3 font-semibold">#{returned.id}</td>
+                  <td className="px-4 py-3">
+                    <div className="space-y-1">
+                      {(returned.lines || []).map(line => (
+                        <div key={line.id} className="flex items-center justify-between gap-4">
+                          <span className="font-medium">{line.item_name}</span>
+                          <span className="text-xs text-slate-500">{qty(line.quantity, line.unit_type)} - {money(line.line_total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 font-semibold text-red-700">{money(returned.total)}</td>
+                  <td className="px-4 py-3 text-slate-500">{returned.created_by_name || '-'}</td>
+                </tr>
+              ))}
+              {!returnsHistory.length && (
+                <tr><td colSpan="4" className="px-4 py-10 text-center text-slate-400">No POS returns for this date</td></tr>
               )}
             </tbody>
           </table>

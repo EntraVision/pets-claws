@@ -50,6 +50,44 @@ router.get('/sales', authenticate, requirePermission('pos'), async (req, res) =>
   res.json(result.rows);
 });
 
+router.get('/returns', authenticate, requirePermission('pos'), async (req, res) => {
+  const { date } = req.query;
+  const params = [];
+  const where = [];
+  if (date) {
+    params.push(date);
+    where.push(`(
+      ((r.created_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Beirut')::date = $${params.length}::date
+      OR r.created_at::date = $${params.length}::date
+    )`);
+  }
+
+  const result = await db.query(
+    `SELECT
+       r.*,
+       u.username AS created_by_name,
+       COUNT(rl.id)::int AS line_count,
+       COALESCE(json_agg(json_build_object(
+         'id', rl.id,
+         'item_id', rl.item_id,
+         'item_name', rl.item_name,
+         'quantity', rl.quantity,
+         'unit_type', rl.unit_type,
+         'unit_price', rl.unit_price,
+         'line_total', rl.line_total
+       ) ORDER BY rl.id) FILTER (WHERE rl.id IS NOT NULL), '[]') AS lines
+     FROM returns r
+     LEFT JOIN users u ON u.id = r.created_by
+     LEFT JOIN return_lines rl ON rl.return_id = r.id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     GROUP BY r.id, u.username
+     ORDER BY r.created_at DESC
+     LIMIT 100`,
+    params
+  );
+  res.json(result.rows);
+});
+
 router.post('/sales', authenticate, requirePermission('pos'), async (req, res) => {
   const { lines = [], cart_discount = 0, cart_discount_percent, paid_status = 'paid' } = req.body;
   if (!Array.isArray(lines) || lines.length === 0) return res.status(400).json({ error: 'Sale lines are required' });
@@ -141,6 +179,67 @@ router.post('/sales', authenticate, requirePermission('pos'), async (req, res) =
 
     await client.query('COMMIT');
     res.status(201).json(sale.rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/returns', authenticate, requirePermission('pos'), async (req, res) => {
+  const { lines = [] } = req.body;
+  if (!Array.isArray(lines) || lines.length === 0) return res.status(400).json({ error: 'Return lines are required' });
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const prepared = [];
+
+    for (const line of lines) {
+      if (line.custom || !line.item_id) throw new Error('Returned item must exist in inventory');
+
+      const itemResult = await client.query('SELECT * FROM items WHERE id = $1 FOR UPDATE', [line.item_id]);
+      const item = itemResult.rows[0];
+      if (!item) throw new Error(`Item is unavailable: ${line.item_id}`);
+
+      const quantity = validQuantity(line.quantity, item.unit_type);
+      if (!quantity || quantity <= 0) throw new Error(`Invalid return quantity for ${item.name}`);
+
+      const unitPrice = money(line.unit_price === undefined ? item.sale_price : line.unit_price);
+      if (unitPrice <= 0) throw new Error(`Invalid refund price for ${item.name}`);
+
+      const lineTotal = money(unitPrice * quantity);
+      prepared.push({ item, quantity, unitPrice, lineTotal });
+    }
+
+    const subtotal = money(prepared.reduce((sum, line) => sum + line.lineTotal, 0));
+    const returned = await client.query(
+      `INSERT INTO returns (subtotal, total, created_by)
+       VALUES ($1,$2,$3) RETURNING *`,
+      [subtotal, subtotal, req.user.id]
+    );
+
+    for (const line of prepared) {
+      await client.query(
+        `INSERT INTO return_lines
+         (return_id, item_id, item_name, barcode, quantity, unit_type, unit_price, unit_cost, line_total)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [returned.rows[0].id, line.item.id, line.item.name, line.item.barcode, line.quantity,
+          line.item.unit_type, line.unitPrice, line.item.cost_price, line.lineTotal]
+      );
+
+      await client.query('UPDATE items SET quantity = quantity + $1, updated_at = NOW() WHERE id = $2', [line.quantity, line.item.id]);
+      await client.query(
+        `INSERT INTO item_history (item_id, user_id, action, old_values, new_values, notes)
+         VALUES ($1,$2,'pos_return',$3,$4,$5)`,
+        [line.item.id, req.user.id, JSON.stringify({ quantity: line.item.quantity }),
+          JSON.stringify({ quantity: Number(line.item.quantity) + line.quantity }), `POS return #${returned.rows[0].id}`]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json(returned.rows[0]);
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(400).json({ error: err.message });

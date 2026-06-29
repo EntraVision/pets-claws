@@ -10,6 +10,7 @@ import {
   Plus,
   ReceiptText,
   FileText,
+  RotateCcw,
   ShoppingBag,
   TrendingUp,
 } from 'lucide-react'
@@ -110,7 +111,7 @@ function TrendChart({ data = [] }) {
 
 function BarComparison({ summary, periodLabel }) {
   const bars = [
-    { label: 'Sales', value: number(summary?.sales_period), color: 'bg-emerald-700' },
+    { label: 'Net Sales', value: number(summary?.sales_period), color: 'bg-emerald-700' },
     { label: 'Purchases', value: number(summary?.purchases_period), color: 'bg-yellow-500' },
     { label: 'Expenses', value: number(summary?.expenses_period), color: 'bg-slate-500' },
     { label: 'Margin', value: number(summary?.gross_margin_period), color: 'bg-teal-600' },
@@ -236,7 +237,8 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
-        <Metric icon={CreditCard} label={`Sales ${periodLabels[period]}`} value={money(summary?.sales_period)} />
+        <Metric icon={CreditCard} label={`Net Sales ${periodLabels[period]}`} value={money(summary?.sales_period)} />
+        <Metric icon={RotateCcw} label={`Returns ${periodLabels[period]}`} value={money(summary?.returns_period)} tone="red" />
         <Metric icon={ShoppingBag} label={`Purchases ${periodLabels[period]}`} value={money(summary?.purchases_period)} tone="yellow" />
         <Metric icon={ReceiptText} label={`Expenses ${periodLabels[period]}`} value={money(summary?.expenses_period)} tone="slate" />
         <Metric icon={TrendingUp} label={`Gross Margin ${periodLabels[period]}`} value={money(summary?.gross_margin_period)} />

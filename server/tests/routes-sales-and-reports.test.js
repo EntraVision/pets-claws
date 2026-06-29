@@ -57,6 +57,96 @@ test('pos sales create handles a custom item checkout', async () => {
   assert.equal(operations.some(sql => sql.includes('INSERT INTO sale_lines')), true);
 });
 
+test('pos returns create requires at least one line', async () => {
+  const router = loadWithMocks(posRoutePath, {
+    '../db': { connect: async () => createDbClient(() => ({ rows: [] })) },
+    '../middleware/auth': createAuthStub(),
+  });
+
+  const res = await invokeRoute(router, 'post', '/returns', { body: { lines: [] } });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { error: 'Return lines are required' });
+});
+
+test('pos returns reject unknown inventory items', async () => {
+  const router = loadWithMocks(posRoutePath, {
+    '../db': {
+      connect: async () => createDbClient(async (sql) => {
+        if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [] };
+        if (sql.includes('SELECT * FROM items WHERE id = $1 FOR UPDATE')) return { rows: [] };
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }),
+    },
+    '../middleware/auth': createAuthStub(),
+  });
+
+  const res = await invokeRoute(router, 'post', '/returns', {
+    body: { lines: [{ item_id: 404, quantity: 1, unit_price: 5 }] },
+  });
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /Item is unavailable/);
+});
+
+test('pos returns validate item quantity rules', async () => {
+  const router = loadWithMocks(posRoutePath, {
+    '../db': {
+      connect: async () => createDbClient(async (sql) => {
+        if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [] };
+        if (sql.includes('SELECT * FROM items WHERE id = $1 FOR UPDATE')) {
+          return { rows: [{ id: 3, name: 'Cat Toy', barcode: '333', quantity: 4, unit_type: 'piece', sale_price: 6, cost_price: 2 }] };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }),
+    },
+    '../middleware/auth': createAuthStub(),
+  });
+
+  const res = await invokeRoute(router, 'post', '/returns', {
+    body: { lines: [{ item_id: 3, quantity: 1.5, unit_price: 6 }] },
+  });
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /quantity for pieces must be a whole number/);
+});
+
+test('pos returns create increases stock and logs history', async () => {
+  const operations = [];
+  const paramsByOperation = [];
+  const item = { id: 3, name: 'Cat Toy', barcode: '333', quantity: '4', unit_type: 'piece', sale_price: '6.00', cost_price: '2.00' };
+  const router = loadWithMocks(posRoutePath, {
+    '../db': {
+      connect: async () => createDbClient(async (sql, params) => {
+        operations.push(sql);
+        paramsByOperation.push(params);
+        if (sql === 'BEGIN' || sql === 'COMMIT') return { rows: [] };
+        if (sql.includes('SELECT * FROM items WHERE id = $1 FOR UPDATE')) return { rows: [item] };
+        if (sql.includes('INSERT INTO returns')) {
+          return { rows: [{ id: 22, subtotal: 12, total: 12, created_by: 1 }] };
+        }
+        if (sql.includes('INSERT INTO return_lines')) return { rows: [] };
+        if (sql.includes('UPDATE items SET quantity = quantity + $1')) return { rows: [] };
+        if (sql.includes('INSERT INTO item_history')) return { rows: [] };
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }),
+    },
+    '../middleware/auth': createAuthStub(),
+  });
+
+  const res = await invokeRoute(router, 'post', '/returns', {
+    body: { lines: [{ item_id: 3, quantity: 2, unit_price: 6 }] },
+  });
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.id, 22);
+  assert.equal(operations.some(sql => sql.includes('INSERT INTO returns')), true);
+  assert.equal(operations.some(sql => sql.includes('INSERT INTO return_lines')), true);
+  assert.equal(operations.some(sql => sql.includes('UPDATE items SET quantity = quantity + $1')), true);
+  assert.equal(operations.some(sql => sql.includes("'pos_return'")), true);
+  const stockUpdateParams = paramsByOperation[operations.findIndex(sql => sql.includes('UPDATE items SET quantity = quantity + $1'))];
+  assert.deepEqual(stockUpdateParams, [2, 3]);
+});
+
 test('purchases create requires purchase lines', async () => {
   const router = loadWithMocks(purchasesRoutePath, {
     '../db': { connect: async () => createDbClient(() => ({ rows: [] })) },
@@ -136,6 +226,38 @@ test('reports summary computes pure cash from fetched totals', async () => {
   assert.equal(res.body.sales_count, 3);
 });
 
+test('reports summary subtracts returns from daily totals', async () => {
+  const router = loadWithMocks(reportsRoutePath, {
+    '../db': {
+      query: async (sql) => {
+        if (sql.includes('start_at::date AS start_date')) return { rows: [{ start_date: '2026-06-13', end_date: '2026-06-13' }] };
+        if (sql.includes('FROM sales s, bounds')) return { rows: [{ total: '100.00', count: 2 }] };
+        if (sql.includes('FROM returns r, bounds')) return { rows: [{ total: '25.00', count: 1 }] };
+        if (sql.includes('COUNT(e.id)::int AS count')) return { rows: [{ total: '10.00', count: 1 }] };
+        if (sql.includes('COUNT(p.id)::int AS count')) return { rows: [{ total: '5.00', count: 1 }] };
+        if (sql.includes('FROM sale_lines sl') && sql.includes('(sl.unit_price - sl.unit_cost)')) return { rows: [{ total: '40.00' }] };
+        if (sql.includes('FROM return_lines rl') && sql.includes('(rl.unit_price - rl.unit_cost)')) return { rows: [{ total: '8.00' }] };
+        if (sql.includes('SUM(sl.quantity)')) return { rows: [{ total: '10.00' }] };
+        if (sql.includes('SUM(rl.quantity)')) return { rows: [{ total: '2.00' }] };
+        if (sql.includes('LIMIT 10')) return { rows: [] };
+        if (sql.includes('LIMIT 100')) return { rows: [] };
+        throw new Error(`Unexpected SQL: ${sql}`);
+      },
+    },
+    '../middleware/auth': createAuthStub(),
+  });
+
+  const res = await invokeRoute(router, 'get', '/summary', { query: { period: 'day', date: '2026-06-13' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.sales_total, 75);
+  assert.equal(res.body.returns_total, '25.00');
+  assert.equal(res.body.returns_count, 1);
+  assert.equal(res.body.pure_cash, 60);
+  assert.equal(res.body.gross_margin_total, 32);
+  assert.equal(res.body.stock_output_total, 8);
+  assert.equal(res.body.stock_return_total, '2.00');
+});
+
 test('reports monthly returns daily rows and month totals', async () => {
   const router = loadWithMocks(reportsRoutePath, {
     '../db': {
@@ -150,27 +272,33 @@ test('reports monthly returns daily rows and month totals', async () => {
               {
                 date: '2026-06-01',
                 day: 1,
-                sales_total: '20.00',
+                sales_total: '16.00',
                 sales_count: 2,
+                returns_total: '4.00',
+                returns_count: 1,
                 expenses_total: '5.00',
                 expenses_count: 1,
                 supplier_payments_total: '3.00',
                 supplier_payments_count: 1,
-                gross_margin_total: '8.00',
-                stock_output_total: '4.00',
-                pure_cash: '12.00',
+                gross_margin_total: '6.00',
+                stock_output_total: '3.00',
+                stock_return_total: '1.00',
+                pure_cash: '8.00',
               },
               {
                 date: '2026-06-02',
                 day: 2,
                 sales_total: '0.00',
                 sales_count: 0,
+                returns_total: '0.00',
+                returns_count: 0,
                 expenses_total: '2.00',
                 expenses_count: 1,
                 supplier_payments_total: '0.00',
                 supplier_payments_count: 0,
                 gross_margin_total: '0.00',
                 stock_output_total: '0.00',
+                stock_return_total: '0.00',
                 pure_cash: '-2.00',
               },
             ],
@@ -189,9 +317,11 @@ test('reports monthly returns daily rows and month totals', async () => {
   assert.equal(res.body.start_date, '2026-06-01');
   assert.equal(res.body.end_date, '2026-06-30');
   assert.equal(res.body.days.length, 2);
-  assert.equal(res.body.totals.sales_total, 20);
+  assert.equal(res.body.totals.sales_total, 16);
+  assert.equal(res.body.totals.returns_total, 4);
+  assert.equal(res.body.totals.stock_return_total, 1);
   assert.equal(res.body.totals.expenses_total, 7);
-  assert.equal(res.body.totals.pure_cash, 10);
+  assert.equal(res.body.totals.pure_cash, 6);
   assert.equal(res.body.top_sold[0].item_name, 'Cat Tuna Can');
 });
 
